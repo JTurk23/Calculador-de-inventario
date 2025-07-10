@@ -1,0 +1,140 @@
+Sub CalculateInventoryRequirements()
+    Dim wsInv As Worksheet, wsRecipes As Worksheet, wsPlan As Worksheet, wsReq As Worksheet
+    Dim lastRowInv As Long, lastRowRecipes As Long, lastRowPlan As Long, lastRowReq As Long
+    Dim dictItems As Object, dictCaseSizes As Object
+    Dim i As Long, j As Long, k As Long
+    Dim itemNum As String, itemDesc As String
+    Dim req2p As Double, req4p As Double, totalReq As Double
+    Dim casesPerItem As Variant ' Changed to Variant to handle both numbers and text
+    Dim caseSize As Variant
+    
+    ' Error handling setup
+    On Error GoTo ErrorHandler
+    
+    ' Initialize
+    Set dictItems = CreateObject("Scripting.Dictionary")
+    Set dictCaseSizes = CreateObject("Scripting.Dictionary")
+    Set wsInv = Sheets("Inventory")
+    Set wsRecipes = Sheets("Recipes")
+    Set wsPlan = Sheets("Kitting_Plan")
+    Set wsReq = Sheets("Requirements")
+    
+    ' Clear existing requirements
+    wsReq.Cells.ClearContents
+    
+    ' Add headers
+    wsReq.Range("A1:F1").Value = Array("Item Number", "Item Description", "Total Required", "Current Inventory", "Difference", "Cases Needed")
+    
+    ' Get last rows
+    lastRowRecipes = wsRecipes.Cells(wsRecipes.Rows.Count, "A").End(xlUp).Row
+    lastRowPlan = wsPlan.Cells(wsPlan.Rows.Count, "A").End(xlUp).Row
+    lastRowInv = wsInv.Cells(wsInv.Rows.Count, "A").End(xlUp).Row
+    
+    ' Load case sizes into dictionary
+    For i = 2 To lastRowInv
+        itemNum = wsInv.Cells(i, "A").Value
+        If Not dictCaseSizes.Exists(itemNum) Then
+            ' Handle possible non-numeric case sizes
+            If IsNumeric(wsInv.Cells(i, "C").Value) Then
+                dictCaseSizes.Add itemNum, CDbl(wsInv.Cells(i, "C").Value)
+            Else
+                dictCaseSizes.Add itemNum, "N/A"
+            End If
+        End If
+    Next i
+    
+    ' Process all recipes to identify all items needed
+    For i = 2 To lastRowRecipes
+        itemNum = wsRecipes.Cells(i, "G").Value
+        itemDesc = wsRecipes.Cells(i, "D").Value
+        
+        If Not dictItems.Exists(itemNum) Then
+            dictItems.Add itemNum, itemDesc
+        End If
+    Next i
+    
+    ' Calculate requirements for each item
+    Dim itemKeys As Variant
+    itemKeys = dictItems.Keys
+    
+    For i = 0 To dictItems.Count - 1
+        itemNum = itemKeys(i)
+        itemDesc = dictItems(itemNum)
+        totalReq = 0
+        
+        ' Calculate total requirements across all recipes
+        For j = 2 To lastRowRecipes
+            If wsRecipes.Cells(j, "G").Value = itemNum Then
+                Dim recipeNum As Long
+                recipeNum = wsRecipes.Cells(j, "B").Value
+                
+                ' Find matching recipe in kitting plan
+                For k = 2 To lastRowPlan
+                    If wsPlan.Cells(k, "A").Value = recipeNum Then
+                        req2p = wsRecipes.Cells(j, "E").Value * wsPlan.Cells(k, "B").Value
+                        req4p = wsRecipes.Cells(j, "F").Value * wsPlan.Cells(k, "C").Value
+                        totalReq = totalReq + req2p + req4p
+                        Exit For
+                    End If
+                Next k
+            End If
+        Next j
+        
+        ' Calculate cases needed
+        If dictCaseSizes.Exists(itemNum) Then
+            caseSize = dictCaseSizes(itemNum)
+            
+            If IsNumeric(caseSize) And caseSize > 0 Then
+                casesPerItem = Application.WorksheetFunction.RoundUp(totalReq / caseSize, 0)
+            Else
+                casesPerItem = "N/A" ' For invalid case sizes
+            End If
+        Else
+            casesPerItem = "N/A" ' For items without case size info
+        End If
+        
+        ' Write to requirements sheet
+        lastRowReq = wsReq.Cells(wsReq.Rows.Count, "A").End(xlUp).Row + 1
+        With wsReq
+            .Cells(lastRowReq, "A").Value = itemNum
+            .Cells(lastRowReq, "B").Value = itemDesc
+            .Cells(lastRowReq, "C").Value = totalReq
+            
+            ' Get current inventory with error handling
+            On Error Resume Next
+            .Cells(lastRowReq, "D").Value = Application.WorksheetFunction.VLookup(itemNum, wsInv.Range("A:D"), 4, False)
+            If Err.Number <> 0 Then
+                .Cells(lastRowReq, "D").Value = "N/A"
+                Err.Clear
+            End If
+            On Error GoTo 0
+            
+            ' Calculate difference if we have both values
+            If IsNumeric(.Cells(lastRowReq, "C").Value) And IsNumeric(.Cells(lastRowReq, "D").Value) Then
+                .Cells(lastRowReq, "E").Value = .Cells(lastRowReq, "D").Value - totalReq
+            Else
+                .Cells(lastRowReq, "E").Value = "N/A"
+            End If
+            
+            ' Add cases needed
+            .Cells(lastRowReq, "F").Value = casesPerItem
+        End With
+    Next i
+    
+    ' Format the requirements sheet
+    With wsReq
+        .Range("A1:F1").Font.Bold = True
+        .Columns("A:F").AutoFit
+        .Range("C:E").NumberFormat = "#,##0"
+        .Range("F:F").HorizontalAlignment = xlCenter
+    End With
+    
+    MsgBox "Inventory requirements calculation complete!", vbInformation
+    Exit Sub
+    
+ErrorHandler:
+    MsgBox "Error " & Err.Number & ": " & Err.Description & vbCrLf & _
+           "Occurred while processing item: " & itemNum, vbCritical
+    Resume Next
+End Sub
+
