@@ -1,0 +1,285 @@
+function calculateInventoryRequirements() {
+  try {
+    // Get all worksheets
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const wsInv = ss.getSheetByName("Inventory");
+    const wsRecipes = ss.getSheetByName("Recipes");
+    const wsPlan = ss.getSheetByName("Kitting_Plan");
+    const wsReq = ss.getSheetByName("Requirements");
+    
+    // Check if all sheets exist
+    if (!wsInv || !wsRecipes || !wsPlan || !wsReq) {
+      throw new Error("One or more required sheets not found. Please ensure you have: Inventory, Recipes, Kitting_Plan, and Requirements sheets.");
+    }
+    
+    // Clear existing requirements
+    wsReq.clear();
+    
+    // Add headers
+    wsReq.getRange("A1:F1").setValues([["Item Number", "Item Description", "Total Required", "Current Inventory", "Difference", "Cases Needed"]]);
+    
+    // Get data ranges
+    const inventoryData = wsInv.getDataRange().getValues();
+    const recipesData = wsRecipes.getDataRange().getValues();
+    const planData = wsPlan.getDataRange().getValues();
+    
+    console.log("Inventory rows:", inventoryData.length);
+    console.log("Recipes rows:", recipesData.length);
+    console.log("Plan rows:", planData.length);
+    
+    // Debug: Show Kitting Plan structure
+    console.log("Kitting Plan headers:", planData[0]);
+    if (planData.length > 1) console.log("Sample Kitting Plan row:", planData[1]);
+    
+    // Create dictionaries for case sizes and current inventory
+    const dictCaseSizes = {};
+    const dictCurrentInventory = {};
+    
+    // Load case sizes and current inventory from Inventory sheet
+    // Assuming: A=Item#, B=Description, C=CaseSize, D=CurrentQty
+    for (let i = 1; i < inventoryData.length; i++) {
+      const itemNum = inventoryData[i][0]; // Column A - Item Number
+      const caseSize = inventoryData[i][2]; // Column C - Case Size
+      const currentQty = inventoryData[i][3]; // Column D - Current Inventory
+      
+      if (itemNum) {
+        // Convert case size to number
+        let caseSizeNum = 1; // Default to 1
+        if (caseSize !== null && caseSize !== undefined && caseSize !== "") {
+          if (typeof caseSize === 'number') {
+            caseSizeNum = caseSize;
+          } else if (typeof caseSize === 'string') {
+            caseSizeNum = parseFloat(caseSize.toString().replace(/[^0-9.-]/g, ''));
+          }
+        }
+        dictCaseSizes[itemNum] = isNaN(caseSizeNum) || caseSizeNum <= 0 ? 1 : caseSizeNum;
+        
+        // Store current inventory
+        dictCurrentInventory[itemNum] = parseFloat(currentQty) || 0;
+      }
+    }
+    
+    // Create a dictionary to store total requirements per SKU
+    const skuTotalRequirements = {};
+    const skuDescriptions = {};
+    
+    // Process all recipe rows to calculate total requirements per SKU
+    for (let i = 1; i < recipesData.length; i++) {
+      const recipeNum = recipesData[i][1]; // Column B - Recipe Number
+      const itemDesc = recipesData[i][3]; // Column D - Item Description  
+      const qty2p = parseFloat(recipesData[i][4]) || 0; // Column E - 2p quantity
+      const qty4p = parseFloat(recipesData[i][5]) || 0; // Column F - 4p quantity
+      const itemNum = recipesData[i][6]; // Column G - Item Number (SKU)
+      
+      if (itemNum && recipeNum) {
+        // Initialize SKU in dictionaries if not exists
+        if (!skuTotalRequirements[itemNum]) {
+          skuTotalRequirements[itemNum] = 0;
+          skuDescriptions[itemNum] = itemDesc || "Unknown Item";
+        }
+        
+        // Find the production plan for this recipe
+        let plan2p = 0;
+        let plan4p = 0;
+        
+        for (let k = 1; k < planData.length; k++) {
+          if (planData[k][0] == recipeNum) { // Column A matches recipe number
+            // FIXED: Use the correct single columns for 2p and 4p plans
+            plan2p = parseFloat(planData[k][1]) || 0; // Column B - 2p plan (CORRECTED!)
+            plan4p = parseFloat(planData[k][2]) || 0; // Column C - 4p plan (CORRECTED!)
+            break;
+          }
+        }
+        
+        // Calculate requirements for this recipe/SKU combination
+        const req2p = qty2p * plan2p;
+        const req4p = qty4p * plan4p;
+        const totalReqForThisRecipe = req2p + req4p;
+        
+        // Add to the SKU total
+        skuTotalRequirements[itemNum] += totalReqForThisRecipe;
+        
+        console.log(`Recipe ${recipeNum}, SKU ${itemNum}: 2p(${qty2p}*${plan2p}=${req2p}) + 4p(${qty4p}*${plan4p}=${req4p}) = ${totalReqForThisRecipe}. Running total: ${skuTotalRequirements[itemNum]}`);
+      }
+    }
+    
+    console.log(`\nFound ${Object.keys(skuTotalRequirements).length} unique SKUs`);
+    
+    // Create results array
+    const results = [];
+    
+    for (const itemNum in skuTotalRequirements) {
+      const itemDesc = skuDescriptions[itemNum];
+      const totalRequired = skuTotalRequirements[itemNum];
+      const currentInventory = dictCurrentInventory[itemNum] || 0;
+      const difference = currentInventory - totalRequired;
+      
+      // Calculate cases needed
+      let casesNeeded = 0;
+      if (totalRequired > 0) {
+        const caseSize = dictCaseSizes[itemNum] || 1;
+        casesNeeded = Math.ceil(totalRequired / caseSize);
+      }
+      
+      console.log(`Final - SKU ${itemNum}: Total Required = ${totalRequired}, Cases Needed = ${casesNeeded}`);
+      
+      // Add to results
+      results.push([itemNum, itemDesc, totalRequired, currentInventory, difference, casesNeeded]);
+    }
+    
+    // Sort results by Item Number for easier reading
+    results.sort((a, b) => {
+      if (a[0] < b[0]) return -1;
+      if (a[0] > b[0]) return 1;
+      return 0;
+    });
+    
+    // Write results to sheet
+    if (results.length > 0) {
+      wsReq.getRange(2, 1, results.length, 6).setValues(results);
+      
+      // Format the requirements sheet
+      const headerRange = wsReq.getRange("A1:F1");
+      headerRange.setFontWeight("bold");
+      headerRange.setBackground("#4285f4");
+      headerRange.setFontColor("white");
+      
+      // Auto-resize columns
+      wsReq.autoResizeColumns(1, 6);
+      
+      // Format number columns
+      wsReq.getRange(2, 3, results.length, 3).setNumberFormat("#,##0");
+      wsReq.getRange(2, 6, results.length, 1).setHorizontalAlignment("center");
+      
+      // Add conditional formatting for negative differences (shortages)
+      const diffRange = wsReq.getRange(2, 5, results.length, 1);
+      const rule = SpreadsheetApp.newConditionalFormatRule()
+        .whenNumberLessThan(0)
+        .setBackground("#ff9999")
+        .setRanges([diffRange])
+        .build();
+      const rules = wsReq.getConditionalFormatRules();
+      rules.push(rule);
+      wsReq.setConditionalFormatRules(rules);
+      
+      // Add conditional formatting for cases needed > 0
+      const casesRange = wsReq.getRange(2, 6, results.length, 1);
+      const casesRule = SpreadsheetApp.newConditionalFormatRule()
+        .whenNumberGreaterThan(0)
+        .setBackground("#c9daf8")
+        .setRanges([casesRange])
+        .build();
+      const allRules = wsReq.getConditionalFormatRules();
+      allRules.push(casesRule);
+      wsReq.setConditionalFormatRules(allRules);
+    }
+    
+    SpreadsheetApp.getUi().alert(`Inventory requirements calculation complete! Processed ${results.length} unique SKUs across ${Object.keys(skuTotalRequirements).length} items.`);
+    
+  } catch (error) {
+    SpreadsheetApp.getUi().alert("Error: " + error.toString());
+    console.error("Error in calculateInventoryRequirements:", error);
+  }
+}
+
+// Helper function to debug specific SKU calculations
+function debugSpecificSKU(targetSKU) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const wsRecipes = ss.getSheetByName("Recipes");
+  const wsPlan = ss.getSheetByName("Kitting_Plan");
+  
+  const recipesData = wsRecipes.getDataRange().getValues();
+  const planData = wsPlan.getDataRange().getValues();
+  
+  console.log(`\n=== DEBUG FOR SKU: ${targetSKU} ===`);
+  
+  let totalForSKU = 0;
+  
+  for (let i = 1; i < recipesData.length; i++) {
+    const recipeNum = recipesData[i][1];
+    const itemDesc = recipesData[i][3];
+    const qty2p = parseFloat(recipesData[i][4]) || 0;
+    const qty4p = parseFloat(recipesData[i][5]) || 0;
+    const itemNum = recipesData[i][6];
+    
+    if (itemNum == targetSKU) {
+      // Find plan for this recipe
+      let plan2p = 0;
+      let plan4p = 0;
+      
+      for (let k = 1; k < planData.length; k++) {
+        if (planData[k][0] == recipeNum) {
+          // FIXED: Use correct column references
+          plan2p = parseFloat(planData[k][1]) || 0; // Column B - 2p plan
+          plan4p = parseFloat(planData[k][2]) || 0; // Column C - 4p plan
+          break;
+        }
+      }
+      
+      const req2p = qty2p * plan2p;
+      const req4p = qty4p * plan4p;
+      const recipeTotal = req2p + req4p;
+      totalForSKU += recipeTotal;
+      
+      console.log(`Recipe ${recipeNum} (${itemDesc}): 2p=${qty2p}*${plan2p}=${req2p}, 4p=${qty4p}*${plan4p}=${req4p}, Total=${recipeTotal}`);
+    }
+  }
+  
+  console.log(`TOTAL FOR SKU ${targetSKU}: ${totalForSKU}`);
+}
+
+// Helper function to debug data structure
+function debugDataStructure() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const wsInv = ss.getSheetByName("Inventory");
+  const wsRecipes = ss.getSheetByName("Recipes");
+  const wsPlan = ss.getSheetByName("Kitting_Plan");
+  
+  console.log("=== INVENTORY SHEET STRUCTURE ===");
+  const invData = wsInv.getDataRange().getValues();
+  console.log("Headers:", invData[0]);
+  if (invData.length > 1) console.log("Sample row:", invData[1]);
+  
+  console.log("\n=== RECIPES SHEET STRUCTURE ===");
+  const recData = wsRecipes.getDataRange().getValues();
+  console.log("Headers:", recData[0]);
+  if (recData.length > 1) console.log("Sample row:", recData[1]);
+  
+  console.log("\n=== KITTING PLAN SHEET STRUCTURE ===");
+  const planData = wsPlan.getDataRange().getValues();
+  console.log("Headers:", planData[0]);
+  if (planData.length > 1) console.log("Sample row:", planData[1]);
+  
+  // Count unique recipes and SKUs
+  const uniqueRecipes = new Set();
+  const uniqueSKUs = new Set();
+  
+  for (let i = 1; i < recData.length; i++) {
+    if (recData[i][1]) uniqueRecipes.add(recData[i][1]);
+    if (recData[i][6]) uniqueSKUs.add(recData[i][6]);
+  }
+  
+  console.log(`\nFound ${uniqueRecipes.size} unique recipes and ${uniqueSKUs.size} unique SKUs`);
+}
+
+// Optional: Create a custom menu to run the functions
+function onOpen() {
+  const ui = SpreadsheetApp.getUi();
+  ui.createMenu('Inventory Tools')
+    .addItem('Calculate Requirements', 'calculateInventoryRequirements')
+    .addItem('Debug Data Structure', 'debugDataStructure')
+    .addSeparator()
+    .addItem('Debug Specific SKU', 'debugSpecificSKUPrompt')
+    .addToUi();
+}
+
+function debugSpecificSKUPrompt() {
+  const ui = SpreadsheetApp.getUi();
+  const result = ui.prompt('Debug SKU', 'Enter the SKU to debug:', ui.ButtonSet.OK_CANCEL);
+  
+  if (result.getSelectedButton() == ui.Button.OK) {
+    const sku = result.getResponseText();
+    debugSpecificSKU(sku);
+    ui.alert('Check the console (View → Logs) for debug information');
+  }
+}
