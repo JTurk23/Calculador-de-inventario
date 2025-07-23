@@ -1,19 +1,25 @@
 Sub CalculateInventoryRequirements()
     Dim wsInv As Worksheet, wsRecipes As Worksheet, wsPlan As Worksheet, wsReq As Worksheet
     Dim lastRowInv As Long, lastRowRecipes As Long, lastRowPlan As Long, lastRowReq As Long
-    Dim dictItems As Object, dictCaseSizes As Object
+    Dim dictSkuTotals As Object, dictSkuDescriptions As Object, dictCaseSizes As Object, dictCurrentInventory As Object
     Dim i As Long, j As Long, k As Long
-    Dim itemNum As String, itemDesc As String
-    Dim req2p As Double, req4p As Double, totalReq As Double
-    Dim casesPerItem As Variant ' Changed to Variant to handle both numbers and text
+    Dim itemNum As String, itemDesc As String, recipeNum As Long
+    Dim qty2p As Double, qty4p As Double, plan2p As Double, plan4p As Double
+    Dim req2p As Double, req4p As Double, totalReqThisRecipe As Double
+    Dim casesPerItem As Variant
     Dim caseSize As Variant
+    Dim itemKeys As Variant
     
     ' Error handling setup
     On Error GoTo ErrorHandler
     
-    ' Initialize
-    Set dictItems = CreateObject("Scripting.Dictionary")
+    ' Initialize dictionaries for SKU aggregation
+    Set dictSkuTotals = CreateObject("Scripting.Dictionary")
+    Set dictSkuDescriptions = CreateObject("Scripting.Dictionary")
     Set dictCaseSizes = CreateObject("Scripting.Dictionary")
+    Set dictCurrentInventory = CreateObject("Scripting.Dictionary")
+    
+    ' Set worksheet references
     Set wsInv = Sheets("Inventory")
     Set wsRecipes = Sheets("Recipes")
     Set wsPlan = Sheets("Kitting_Plan")
@@ -30,111 +36,209 @@ Sub CalculateInventoryRequirements()
     lastRowPlan = wsPlan.Cells(wsPlan.Rows.Count, "A").End(xlUp).Row
     lastRowInv = wsInv.Cells(wsInv.Rows.Count, "A").End(xlUp).Row
     
-    ' Load case sizes into dictionary
+    Debug.Print "Processing " & lastRowRecipes - 1 & " recipe rows, " & lastRowPlan - 1 & " plan rows, " & lastRowInv - 1 & " inventory rows"
+    
+    ' Load inventory data (case sizes and current inventory)
     For i = 2 To lastRowInv
-        itemNum = wsInv.Cells(i, "A").Value
-        If Not dictCaseSizes.Exists(itemNum) Then
-            ' Handle possible non-numeric case sizes
-            If IsNumeric(wsInv.Cells(i, "C").Value) Then
-                dictCaseSizes.Add itemNum, CDbl(wsInv.Cells(i, "C").Value)
-            Else
-                dictCaseSizes.Add itemNum, "N/A"
+        itemNum = CStr(wsInv.Cells(i, "A").Value)
+        If itemNum <> "" Then
+            ' Load case sizes with default to 1 instead of N/A
+            If Not dictCaseSizes.Exists(itemNum) Then
+                If IsNumeric(wsInv.Cells(i, "C").Value) And wsInv.Cells(i, "C").Value > 0 Then
+                    dictCaseSizes.Add itemNum, CDbl(wsInv.Cells(i, "C").Value)
+                Else
+                    dictCaseSizes.Add itemNum, 1 ' Default to 1 instead of N/A
+                End If
+            End If
+            
+            ' Load current inventory
+            If Not dictCurrentInventory.Exists(itemNum) Then
+                If IsNumeric(wsInv.Cells(i, "D").Value) Then
+                    dictCurrentInventory.Add itemNum, CDbl(wsInv.Cells(i, "D").Value)
+                Else
+                    dictCurrentInventory.Add itemNum, 0
+                End If
             End If
         End If
     Next i
     
-    ' Process all recipes to identify all items needed
+    ' Process ALL recipe rows to accumulate SKU totals across all recipes
     For i = 2 To lastRowRecipes
-        itemNum = wsRecipes.Cells(i, "G").Value
-        itemDesc = wsRecipes.Cells(i, "D").Value
+        recipeNum = wsRecipes.Cells(i, "B").Value ' Column B - Recipe Number
+        itemDesc = CStr(wsRecipes.Cells(i, "D").Value) ' Column D - Item Description
+        qty2p = IIf(IsNumeric(wsRecipes.Cells(i, "E").Value), CDbl(wsRecipes.Cells(i, "E").Value), 0) ' Column E - 2p Qty
+        qty4p = IIf(IsNumeric(wsRecipes.Cells(i, "F").Value), CDbl(wsRecipes.Cells(i, "F").Value), 0) ' Column F - 4p Qty
+        itemNum = CStr(wsRecipes.Cells(i, "G").Value) ' Column G - Item Number (SKU)
         
-        If Not dictItems.Exists(itemNum) Then
-            dictItems.Add itemNum, itemDesc
+        If itemNum <> "" And recipeNum <> 0 Then
+            ' Initialize SKU totals if not exists
+            If Not dictSkuTotals.Exists(itemNum) Then
+                dictSkuTotals.Add itemNum, 0
+                dictSkuDescriptions.Add itemNum, itemDesc
+            End If
+            
+            ' Find the production plan for this recipe
+            plan2p = 0
+            plan4p = 0
+            
+            For k = 2 To lastRowPlan
+                If wsPlan.Cells(k, "A").Value = recipeNum Then ' Column A matches recipe number
+                    plan2p = IIf(IsNumeric(wsPlan.Cells(k, "B").Value), CDbl(wsPlan.Cells(k, "B").Value), 0) ' Column B - 2p plan
+                    plan4p = IIf(IsNumeric(wsPlan.Cells(k, "C").Value), CDbl(wsPlan.Cells(k, "C").Value), 0) ' Column C - 4p plan
+                    Exit For
+                End If
+            Next k
+            
+            ' Calculate requirements for this recipe/SKU combination
+            req2p = qty2p * plan2p
+            req4p = qty4p * plan4p
+            totalReqThisRecipe = req2p + req4p
+            
+            ' Add to the SKU total (THIS IS THE KEY FIX!)
+            dictSkuTotals(itemNum) = dictSkuTotals(itemNum) + totalReqThisRecipe
+            
+            Debug.Print "Recipe " & recipeNum & ", SKU " & itemNum & ": 2p(" & qty2p & "*" & plan2p & "=" & req2p & ") + 4p(" & qty4p & "*" & plan4p & "=" & req4p & ") = " & totalReqThisRecipe & ". Running total: " & dictSkuTotals(itemNum)
         End If
     Next i
     
-    ' Calculate requirements for each item
-    Dim itemKeys As Variant
-    itemKeys = dictItems.Keys
+    Debug.Print "Found " & dictSkuTotals.Count & " unique SKUs"
     
-    For i = 0 To dictItems.Count - 1
+    ' Write results to Requirements sheet
+    itemKeys = dictSkuTotals.Keys
+    lastRowReq = 2 ' Start from row 2
+    
+    For i = 0 To dictSkuTotals.Count - 1
         itemNum = itemKeys(i)
-        itemDesc = dictItems(itemNum)
-        totalReq = 0
+        itemDesc = dictSkuDescriptions(itemNum)
+        Dim totalRequired As Double
+        totalRequired = dictSkuTotals(itemNum)
         
-        ' Calculate total requirements across all recipes
-        For j = 2 To lastRowRecipes
-            If wsRecipes.Cells(j, "G").Value = itemNum Then
-                Dim recipeNum As Long
-                recipeNum = wsRecipes.Cells(j, "B").Value
-                
-                ' Find matching recipe in kitting plan
-                For k = 2 To lastRowPlan
-                    If wsPlan.Cells(k, "A").Value = recipeNum Then
-                        req2p = wsRecipes.Cells(j, "E").Value * wsPlan.Cells(k, "B").Value
-                        req4p = wsRecipes.Cells(j, "F").Value * wsPlan.Cells(k, "C").Value
-                        totalReq = totalReq + req2p + req4p
-                        Exit For
-                    End If
-                Next k
-            End If
-        Next j
+        ' Get current inventory
+        Dim currentInventory As Double
+        If dictCurrentInventory.Exists(itemNum) Then
+            currentInventory = dictCurrentInventory(itemNum)
+        Else
+            currentInventory = 0
+        End If
         
-        ' Calculate cases needed
+        ' Calculate difference
+        Dim difference As Double
+        difference = currentInventory - totalRequired
+        
+        ' Calculate cases needed - FIXED LOGIC
         If dictCaseSizes.Exists(itemNum) Then
             caseSize = dictCaseSizes(itemNum)
-            
-            If IsNumeric(caseSize) And caseSize > 0 Then
-                casesPerItem = Application.WorksheetFunction.RoundUp(totalReq / caseSize, 0)
+            If IsNumeric(caseSize) And caseSize > 0 And totalRequired > 0 Then
+                casesPerItem = Application.WorksheetFunction.RoundUp(totalRequired / caseSize, 0)
             Else
-                casesPerItem = "N/A" ' For invalid case sizes
+                casesPerItem = 0
             End If
         Else
-            casesPerItem = "N/A" ' For items without case size info
+            casesPerItem = 0
         End If
         
+        Debug.Print "Final - SKU " & itemNum & ": Total Required = " & totalRequired & ", Cases Needed = " & casesPerItem
+        
         ' Write to requirements sheet
-        lastRowReq = wsReq.Cells(wsReq.Rows.Count, "A").End(xlUp).Row + 1
         With wsReq
             .Cells(lastRowReq, "A").Value = itemNum
             .Cells(lastRowReq, "B").Value = itemDesc
-            .Cells(lastRowReq, "C").Value = totalReq
-            
-            ' Get current inventory with error handling
-            On Error Resume Next
-            .Cells(lastRowReq, "D").Value = Application.WorksheetFunction.VLookup(itemNum, wsInv.Range("A:D"), 4, False)
-            If Err.Number <> 0 Then
-                .Cells(lastRowReq, "D").Value = "N/A"
-                Err.Clear
-            End If
-            On Error GoTo 0
-            
-            ' Calculate difference if we have both values
-            If IsNumeric(.Cells(lastRowReq, "C").Value) And IsNumeric(.Cells(lastRowReq, "D").Value) Then
-                .Cells(lastRowReq, "E").Value = .Cells(lastRowReq, "D").Value - totalReq
-            Else
-                .Cells(lastRowReq, "E").Value = "N/A"
-            End If
-            
-            ' Add cases needed
+            .Cells(lastRowReq, "C").Value = totalRequired
+            .Cells(lastRowReq, "D").Value = currentInventory
+            .Cells(lastRowReq, "E").Value = difference
             .Cells(lastRowReq, "F").Value = casesPerItem
         End With
+        
+        lastRowReq = lastRowReq + 1
     Next i
     
     ' Format the requirements sheet
     With wsReq
         .Range("A1:F1").Font.Bold = True
+        .Range("A1:F1").Interior.Color = RGB(66, 133, 244) ' Blue background
+        .Range("A1:F1").Font.Color = RGB(255, 255, 255) ' White text
         .Columns("A:F").AutoFit
-        .Range("C:E").NumberFormat = "#,##0"
-        .Range("F:F").HorizontalAlignment = xlCenter
+        
+        If lastRowReq > 2 Then
+            .Range("C2:E" & lastRowReq - 1).NumberFormat = "#,##0"
+            .Range("F2:F" & lastRowReq - 1).HorizontalAlignment = xlCenter
+            
+            ' Add conditional formatting for negative differences (shortages)
+            Dim rng As Range
+            Set rng = .Range("E2:E" & lastRowReq - 1)
+            With rng.FormatConditions.Add(Type:=xlCellValue, Operator:=xlLess, Formula1:="0")
+                .Interior.Color = RGB(255, 153, 153) ' Light red
+            End With
+            
+            ' Add conditional formatting for cases needed > 0
+            Set rng = .Range("F2:F" & lastRowReq - 1)
+            With rng.FormatConditions.Add(Type:=xlCellValue, Operator:=xlGreater, Formula1:="0")
+                .Interior.Color = RGB(201, 218, 248) ' Light blue
+            End With
+        End If
     End With
     
-    MsgBox "Inventory requirements calculation complete!", vbInformation
+    MsgBox "Inventory requirements calculation complete! Processed " & dictSkuTotals.Count & " unique SKUs.", vbInformation
     Exit Sub
     
 ErrorHandler:
     MsgBox "Error " & Err.Number & ": " & Err.Description & vbCrLf & _
-           "Occurred while processing item: " & itemNum, vbCritical
+           "Occurred while processing item: " & itemNum & " in recipe: " & recipeNum, vbCritical
     Resume Next
+End Sub
+
+' Helper subroutine to debug specific SKU
+Sub DebugSpecificSKU()
+    Dim targetSKU As String
+    targetSKU = InputBox("Enter SKU to debug:", "Debug SKU")
+    
+    If targetSKU = "" Then Exit Sub
+    
+    Dim wsRecipes As Worksheet, wsPlan As Worksheet
+    Set wsRecipes = Sheets("Recipes")
+    Set wsPlan = Sheets("Kitting_Plan")
+    
+    Dim lastRowRecipes As Long, lastRowPlan As Long
+    lastRowRecipes = wsRecipes.Cells(wsRecipes.Rows.Count, "A").End(xlUp).Row
+    lastRowPlan = wsPlan.Cells(wsPlan.Rows.Count, "A").End(xlUp).Row
+    
+    Debug.Print "=== DEBUG FOR SKU: " & targetSKU & " ==="
+    
+    Dim totalForSKU As Double
+    totalForSKU = 0
+    
+    Dim i As Long, k As Long
+    For i = 2 To lastRowRecipes
+        If CStr(wsRecipes.Cells(i, "G").Value) = targetSKU Then
+            Dim recipeNum As Long, qty2p As Double, qty4p As Double
+            Dim plan2p As Double, plan4p As Double
+            Dim req2p As Double, req4p As Double, recipeTotal As Double
+            
+            recipeNum = wsRecipes.Cells(i, "B").Value
+            qty2p = IIf(IsNumeric(wsRecipes.Cells(i, "E").Value), CDbl(wsRecipes.Cells(i, "E").Value), 0)
+            qty4p = IIf(IsNumeric(wsRecipes.Cells(i, "F").Value), CDbl(wsRecipes.Cells(i, "F").Value), 0)
+            
+            plan2p = 0
+            plan4p = 0
+            
+            For k = 2 To lastRowPlan
+                If wsPlan.Cells(k, "A").Value = recipeNum Then
+                    plan2p = IIf(IsNumeric(wsPlan.Cells(k, "B").Value), CDbl(wsPlan.Cells(k, "B").Value), 0)
+                    plan4p = IIf(IsNumeric(wsPlan.Cells(k, "C").Value), CDbl(wsPlan.Cells(k, "C").Value), 0)
+                    Exit For
+                End If
+            Next k
+            
+            req2p = qty2p * plan2p
+            req4p = qty4p * plan4p
+            recipeTotal = req2p + req4p
+            totalForSKU = totalForSKU + recipeTotal
+            
+            Debug.Print "Recipe " & recipeNum & ": 2p=" & qty2p & "*" & plan2p & "=" & req2p & ", 4p=" & qty4p & "*" & plan4p & "=" & req4p & ", Total=" & recipeTotal
+        End If
+    Next i
+    
+    Debug.Print "TOTAL FOR SKU " & targetSKU & ": " & totalForSKU
+    MsgBox "Debug complete. Check Immediate Window (Ctrl+G) for details."
 End Sub
 
