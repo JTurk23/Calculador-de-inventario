@@ -3,7 +3,8 @@ Sub CalculateInventoryRequirements()
     Dim lastRowInv As Long, lastRowRecipes As Long, lastRowPlan As Long, lastRowReq As Long
     Dim dictSkuTotals As Object, dictSkuDescriptions As Object, dictCaseSizes As Object, dictCurrentInventory As Object
     Dim i As Long, j As Long, k As Long
-    Dim itemNum As String, itemDesc As String, recipeNum As Long
+    Dim itemNum As String, itemDesc As String
+    Dim recipeNum As Variant ' Changed to Variant to handle both numbers and letters
     Dim qty2p As Double, qty4p As Double, plan2p As Double, plan4p As Double
     Dim req2p As Double, req4p As Double, totalReqThisRecipe As Double
     Dim casesPerItem As Variant
@@ -64,13 +65,13 @@ Sub CalculateInventoryRequirements()
     
     ' Process ALL recipe rows to accumulate SKU totals across all recipes
     For i = 2 To lastRowRecipes
-        recipeNum = wsRecipes.Cells(i, "B").Value ' Column B - Recipe Number
+        recipeNum = wsRecipes.Cells(i, "B").Value ' Column B - Recipe Number/Code (now handles both numbers and letters)
         itemDesc = CStr(wsRecipes.Cells(i, "D").Value) ' Column D - Item Description
         qty2p = IIf(IsNumeric(wsRecipes.Cells(i, "E").Value), CDbl(wsRecipes.Cells(i, "E").Value), 0) ' Column E - 2p Qty
         qty4p = IIf(IsNumeric(wsRecipes.Cells(i, "F").Value), CDbl(wsRecipes.Cells(i, "F").Value), 0) ' Column F - 4p Qty
         itemNum = CStr(wsRecipes.Cells(i, "G").Value) ' Column G - Item Number (SKU)
         
-        If itemNum <> "" And recipeNum <> 0 Then
+        If itemNum <> "" And recipeNum <> "" Then
             ' Initialize SKU totals if not exists
             If Not dictSkuTotals.Exists(itemNum) Then
                 dictSkuTotals.Add itemNum, 0
@@ -80,24 +81,37 @@ Sub CalculateInventoryRequirements()
             ' Find the production plan for this recipe
             plan2p = 0
             plan4p = 0
+            Dim foundPlan As Boolean
+            foundPlan = False
             
             For k = 2 To lastRowPlan
-                If wsPlan.Cells(k, "A").Value = recipeNum Then ' Column A matches recipe number
+                ' Handle both numeric and text recipe codes by comparing as strings
+                Dim planRecipe As Variant
+                planRecipe = wsPlan.Cells(k, "A").Value
+                
+                ' Compare recipes as strings to handle both numbers and letters
+                If CStr(planRecipe) = CStr(recipeNum) Then
                     plan2p = IIf(IsNumeric(wsPlan.Cells(k, "B").Value), CDbl(wsPlan.Cells(k, "B").Value), 0) ' Column B - 2p plan
                     plan4p = IIf(IsNumeric(wsPlan.Cells(k, "C").Value), CDbl(wsPlan.Cells(k, "C").Value), 0) ' Column C - 4p plan
+                    foundPlan = True
                     Exit For
                 End If
             Next k
             
-            ' Calculate requirements for this recipe/SKU combination
-            req2p = qty2p * plan2p
-            req4p = qty4p * plan4p
-            totalReqThisRecipe = req2p + req4p
-            
-            ' Add to the SKU total (THIS IS THE KEY FIX!)
-            dictSkuTotals(itemNum) = dictSkuTotals(itemNum) + totalReqThisRecipe
-            
-            Debug.Print "Recipe " & recipeNum & ", SKU " & itemNum & ": 2p(" & qty2p & "*" & plan2p & "=" & req2p & ") + 4p(" & qty4p & "*" & plan4p & "=" & req4p & ") = " & totalReqThisRecipe & ". Running total: " & dictSkuTotals(itemNum)
+            ' Skip this item if no kitting plan found, but continue processing
+            If Not foundPlan Then
+                Debug.Print "Warning: No kitting plan found for Recipe " & recipeNum & ", SKU " & itemNum & " - skipping"
+            Else
+                ' Calculate requirements for this recipe/SKU combination
+                req2p = qty2p * plan2p
+                req4p = qty4p * plan4p
+                totalReqThisRecipe = req2p + req4p
+                
+                ' Add to the SKU total (THIS IS THE KEY FIX!)
+                dictSkuTotals(itemNum) = dictSkuTotals(itemNum) + totalReqThisRecipe
+                
+                Debug.Print "Recipe " & recipeNum & ", SKU " & itemNum & ": 2p(" & qty2p & "*" & plan2p & "=" & req2p & ") + 4p(" & qty4p & "*" & plan4p & "=" & req4p & ") = " & totalReqThisRecipe & ". Running total: " & dictSkuTotals(itemNum)
+            End If
         End If
     Next i
     
@@ -178,7 +192,7 @@ Sub CalculateInventoryRequirements()
         End If
     End With
     
-    MsgBox "Inventory requirements calculation complete! Processed " & dictSkuTotals.Count & " unique SKUs.", vbInformation
+    MsgBox "Inventory requirements calculation complete! Processed " & dictSkuTotals.Count & " unique SKUs across " & (lastRowRecipes - 1) & " recipe entries.", vbInformation
     Exit Sub
     
 ErrorHandler:
@@ -210,7 +224,7 @@ Sub DebugSpecificSKU()
     Dim i As Long, k As Long
     For i = 2 To lastRowRecipes
         If CStr(wsRecipes.Cells(i, "G").Value) = targetSKU Then
-            Dim recipeNum As Long, qty2p As Double, qty4p As Double
+            Dim recipeNum As Variant, qty2p As Double, qty4p As Double
             Dim plan2p As Double, plan4p As Double
             Dim req2p As Double, req4p As Double, recipeTotal As Double
             
@@ -222,7 +236,7 @@ Sub DebugSpecificSKU()
             plan4p = 0
             
             For k = 2 To lastRowPlan
-                If wsPlan.Cells(k, "A").Value = recipeNum Then
+                If CStr(wsPlan.Cells(k, "A").Value) = CStr(recipeNum) Then
                     plan2p = IIf(IsNumeric(wsPlan.Cells(k, "B").Value), CDbl(wsPlan.Cells(k, "B").Value), 0)
                     plan4p = IIf(IsNumeric(wsPlan.Cells(k, "C").Value), CDbl(wsPlan.Cells(k, "C").Value), 0)
                     Exit For
@@ -241,4 +255,6 @@ Sub DebugSpecificSKU()
     Debug.Print "TOTAL FOR SKU " & targetSKU & ": " & totalForSKU
     MsgBox "Debug complete. Check Immediate Window (Ctrl+G) for details."
 End Sub
+
+
 
