@@ -27,9 +27,11 @@ function calculateInventoryRequirements() {
     console.log("Recipes rows:", recipesData.length);
     console.log("Plan rows:", planData.length);
     
-    // Debug: Show Kitting Plan structure
+    // Debug: Show structures
+    console.log("Recipes headers:", recipesData[0]);
     console.log("Kitting Plan headers:", planData[0]);
-    if (planData.length > 1) console.log("Sample Kitting Plan row:", planData[1]);
+    if (recipesData.length > 1) console.log("Sample recipe row:", recipesData[1]);
+    if (planData.length > 1) console.log("Sample plan row:", planData[1]);
     
     // Create dictionaries for case sizes and current inventory
     const dictCaseSizes = {};
@@ -65,13 +67,13 @@ function calculateInventoryRequirements() {
     
     // Process all recipe rows to calculate total requirements per SKU
     for (let i = 1; i < recipesData.length; i++) {
-      const recipeNum = recipesData[i][1]; // Column B - Recipe Number
+      const recipeNum = recipesData[i][1]; // Column B - Recipe Number/Code (handles both numbers and letters)
       const itemDesc = recipesData[i][3]; // Column D - Item Description  
       const qty2p = parseFloat(recipesData[i][4]) || 0; // Column E - 2p quantity
       const qty4p = parseFloat(recipesData[i][5]) || 0; // Column F - 4p quantity
       const itemNum = recipesData[i][6]; // Column G - Item Number (SKU)
       
-      if (itemNum && recipeNum) {
+      if (itemNum && recipeNum !== null && recipeNum !== undefined && recipeNum !== "") {
         // Initialize SKU in dictionaries if not exists
         if (!skuTotalRequirements[itemNum]) {
           skuTotalRequirements[itemNum] = 0;
@@ -81,25 +83,35 @@ function calculateInventoryRequirements() {
         // Find the production plan for this recipe
         let plan2p = 0;
         let plan4p = 0;
+        let foundPlan = false;
         
         for (let k = 1; k < planData.length; k++) {
-          if (planData[k][0] == recipeNum) { // Column A matches recipe number
-            // FIXED: Use the correct single columns for 2p and 4p plans
-            plan2p = parseFloat(planData[k][1]) || 0; // Column B - 2p plan (CORRECTED!)
-            plan4p = parseFloat(planData[k][2]) || 0; // Column C - 4p plan (CORRECTED!)
+          // Handle both numeric and text recipe codes by comparing as strings
+          const planRecipe = planData[k][0]; // Column A - Recipe code from kitting plan
+          
+          // Compare recipes as strings to handle both numbers and letters
+          if (String(planRecipe) === String(recipeNum)) {
+            plan2p = parseFloat(planData[k][1]) || 0; // Column B - 2p plan
+            plan4p = parseFloat(planData[k][2]) || 0; // Column C - 4p plan
+            foundPlan = true;
             break;
           }
         }
         
-        // Calculate requirements for this recipe/SKU combination
-        const req2p = qty2p * plan2p;
-        const req4p = qty4p * plan4p;
-        const totalReqForThisRecipe = req2p + req4p;
-        
-        // Add to the SKU total
-        skuTotalRequirements[itemNum] += totalReqForThisRecipe;
-        
-        console.log(`Recipe ${recipeNum}, SKU ${itemNum}: 2p(${qty2p}*${plan2p}=${req2p}) + 4p(${qty4p}*${plan4p}=${req4p}) = ${totalReqForThisRecipe}. Running total: ${skuTotalRequirements[itemNum]}`);
+        // Skip this item if no kitting plan found, but continue processing
+        if (!foundPlan) {
+          console.log(`Warning: No kitting plan found for Recipe ${recipeNum}, SKU ${itemNum} - skipping`);
+        } else {
+          // Calculate requirements for this recipe/SKU combination
+          const req2p = qty2p * plan2p;
+          const req4p = qty4p * plan4p;
+          const totalReqForThisRecipe = req2p + req4p;
+          
+          // Add to the SKU total
+          skuTotalRequirements[itemNum] += totalReqForThisRecipe;
+          
+          console.log(`Recipe ${recipeNum}, SKU ${itemNum}: 2p(${qty2p}*${plan2p}=${req2p}) + 4p(${qty4p}*${plan4p}=${req4p}) = ${totalReqForThisRecipe}. Running total: ${skuTotalRequirements[itemNum]}`);
+        }
       }
     }
     
@@ -174,7 +186,7 @@ function calculateInventoryRequirements() {
       wsReq.setConditionalFormatRules(allRules);
     }
     
-    SpreadsheetApp.getUi().alert(`Inventory requirements calculation complete! Processed ${results.length} unique SKUs across ${Object.keys(skuTotalRequirements).length} items.`);
+    SpreadsheetApp.getUi().alert(`Inventory requirements calculation complete! Processed ${results.length} unique SKUs across ${recipesData.length - 1} recipe entries.`);
     
   } catch (error) {
     SpreadsheetApp.getUi().alert("Error: " + error.toString());
@@ -208,10 +220,10 @@ function debugSpecificSKU(targetSKU) {
       let plan4p = 0;
       
       for (let k = 1; k < planData.length; k++) {
-        if (planData[k][0] == recipeNum) {
-          // FIXED: Use correct column references
-          plan2p = parseFloat(planData[k][1]) || 0; // Column B - 2p plan
-          plan4p = parseFloat(planData[k][2]) || 0; // Column C - 4p plan
+        // Compare as strings to handle both numbers and letters
+        if (String(planData[k][0]) === String(recipeNum)) {
+          plan2p = parseFloat(planData[k][1]) || 0;
+          plan4p = parseFloat(planData[k][2]) || 0;
           break;
         }
       }
@@ -255,11 +267,53 @@ function debugDataStructure() {
   const uniqueSKUs = new Set();
   
   for (let i = 1; i < recData.length; i++) {
-    if (recData[i][1]) uniqueRecipes.add(recData[i][1]);
+    if (recData[i][1]) uniqueRecipes.add(String(recData[i][1])); // Convert to string
     if (recData[i][6]) uniqueSKUs.add(recData[i][6]);
   }
   
   console.log(`\nFound ${uniqueRecipes.size} unique recipes and ${uniqueSKUs.size} unique SKUs`);
+  
+  // Show sample of recipe types found
+  const sampleRecipes = Array.from(uniqueRecipes).slice(0, 10);
+  console.log("Sample recipe codes found:", sampleRecipes);
+}
+
+// Helper function to show recipe matching
+function debugRecipeMatching() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const wsRecipes = ss.getSheetByName("Recipes");
+  const wsPlan = ss.getSheetByName("Kitting_Plan");
+  
+  const recipesData = wsRecipes.getDataRange().getValues();
+  const planData = wsPlan.getDataRange().getValues();
+  
+  console.log("=== RECIPE MATCHING DEBUG ===");
+  
+  // Get unique recipes from both sheets
+  const recipesFromRecipeSheet = new Set();
+  const recipesFromPlanSheet = new Set();
+  
+  for (let i = 1; i < recipesData.length; i++) {
+    if (recipesData[i][1]) recipesFromRecipeSheet.add(String(recipesData[i][1]));
+  }
+  
+  for (let i = 1; i < planData.length; i++) {
+    if (planData[i][0]) recipesFromPlanSheet.add(String(planData[i][0]));
+  }
+  
+  console.log("Recipes in Recipe sheet:", Array.from(recipesFromRecipeSheet).sort());
+  console.log("Recipes in Kitting Plan sheet:", Array.from(recipesFromPlanSheet).sort());
+  
+  // Find missing recipes
+  const missingInPlan = Array.from(recipesFromRecipeSheet).filter(r => !recipesFromPlanSheet.has(r));
+  const missingInRecipes = Array.from(recipesFromPlanSheet).filter(r => !recipesFromRecipeSheet.has(r));
+  
+  if (missingInPlan.length > 0) console.log("Recipes in Recipe sheet but missing in Kitting Plan:", missingInPlan);
+  if (missingInRecipes.length > 0) console.log("Recipes in Kitting Plan but missing in Recipe sheet:", missingInRecipes);
+  
+  if (missingInPlan.length === 0 && missingInRecipes.length === 0) {
+    console.log("✅ All recipes match between sheets!");
+  }
 }
 
 // Optional: Create a custom menu to run the functions
@@ -268,6 +322,7 @@ function onOpen() {
   ui.createMenu('Inventory Tools')
     .addItem('Calculate Requirements', 'calculateInventoryRequirements')
     .addItem('Debug Data Structure', 'debugDataStructure')
+    .addItem('Debug Recipe Matching', 'debugRecipeMatching')
     .addSeparator()
     .addItem('Debug Specific SKU', 'debugSpecificSKUPrompt')
     .addToUi();
@@ -280,6 +335,6 @@ function debugSpecificSKUPrompt() {
   if (result.getSelectedButton() == ui.Button.OK) {
     const sku = result.getResponseText();
     debugSpecificSKU(sku);
-    ui.alert('Check the console (View → Logs) for debug information');
+    ui.alert('Check the console (Extensions → Apps Script → View → Logs) for debug information');
   }
 }
