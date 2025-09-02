@@ -6,22 +6,35 @@ function calculateInventoryRequirements() {
     const wsRecipes = ss.getSheetByName("Recipes");
     const wsPlan = ss.getSheetByName("Kitting_Plan");
     const wsReq = ss.getSheetByName("Requirements");
+    const wsSlotting = ss.getSheetByName("Slotting File"); // New slotting sheet
     
     // Check if all sheets exist
     if (!wsInv || !wsRecipes || !wsPlan || !wsReq) {
       throw new Error("One or more required sheets not found. Please ensure you have: Inventory, Recipes, Kitting_Plan, and Requirements sheets.");
     }
     
+    // Check if slotting sheet exists (optional - will work without it but show warning)
+    if (!wsSlotting) {
+      console.log("Warning: Slotting File sheet not found. Location IDs will not be included.");
+    }
+    
     // Clear existing requirements
     wsReq.clear();
     
-    // Add headers
-    wsReq.getRange("A1:F1").setValues([["Item Number", "Item Description", "Total Required", "Current Inventory", "Difference", "Cases Needed"]]);
+    // Add headers (now including Location Id)
+    wsReq.getRange("A1:G1").setValues([["Item Number", "Item Description", "Location Id", "Total Required", "Current Inventory", "Difference", "Cases Needed"]]);
     
     // Get data ranges
     const inventoryData = wsInv.getDataRange().getValues();
     const recipesData = wsRecipes.getDataRange().getValues();
     const planData = wsPlan.getDataRange().getValues();
+    
+    // Get slotting data if available
+    let slottingData = [];
+    if (wsSlotting) {
+      slottingData = wsSlotting.getDataRange().getValues();
+      console.log("Slotting data rows:", slottingData.length);
+    }
     
     console.log("Inventory rows:", inventoryData.length);
     console.log("Recipes rows:", recipesData.length);
@@ -30,12 +43,15 @@ function calculateInventoryRequirements() {
     // Debug: Show structures
     console.log("Recipes headers:", recipesData[0]);
     console.log("Kitting Plan headers:", planData[0]);
+    if (slottingData.length > 0) console.log("Slotting headers:", slottingData[0]);
     if (recipesData.length > 1) console.log("Sample recipe row:", recipesData[1]);
     if (planData.length > 1) console.log("Sample plan row:", planData[1]);
+    if (slottingData.length > 1) console.log("Sample slotting row:", slottingData[1]);
     
-    // Create dictionaries for case sizes and current inventory
+    // Create dictionaries for case sizes, current inventory, and location IDs
     const dictCaseSizes = {};
     const dictCurrentInventory = {};
+    const dictLocationIds = {}; // New dictionary for location IDs
     
     // Load case sizes and current inventory from Inventory sheet
     // Assuming: A=Item#, B=Description, C=CaseSize, D=CurrentQty
@@ -59,6 +75,20 @@ function calculateInventoryRequirements() {
         // Store current inventory
         dictCurrentInventory[itemNum] = parseFloat(currentQty) || 0;
       }
+    }
+    
+    // Load location IDs from Slotting File sheet
+    // Assuming: A=Location Id, B=Item Description, C=Item Number
+    if (slottingData.length > 0) {
+      for (let i = 1; i < slottingData.length; i++) {
+        const locationId = slottingData[i][0]; // Column A - Location Id
+        const itemNum = slottingData[i][2]; // Column C - Item Number
+        
+        if (itemNum && locationId) {
+          dictLocationIds[itemNum] = locationId;
+        }
+      }
+      console.log(`Loaded ${Object.keys(dictLocationIds).length} location mappings from slotting file`);
     }
     
     // Create a dictionary to store total requirements per SKU
@@ -122,6 +152,7 @@ function calculateInventoryRequirements() {
     
     for (const itemNum in skuTotalRequirements) {
       const itemDesc = skuDescriptions[itemNum];
+      const locationId = dictLocationIds[itemNum] || "Not Found"; // Get location ID or default
       const totalRequired = skuTotalRequirements[itemNum];
       const currentInventory = dictCurrentInventory[itemNum] || 0;
       const difference = currentInventory - totalRequired;
@@ -133,14 +164,19 @@ function calculateInventoryRequirements() {
         casesNeeded = Math.ceil(totalRequired / caseSize);
       }
       
-      console.log(`Final - SKU ${itemNum}: Total Required = ${totalRequired}, Cases Needed = ${casesNeeded}`);
+      console.log(`Final - SKU ${itemNum}: Location ${locationId}, Total Required = ${totalRequired}, Cases Needed = ${casesNeeded}`);
       
-      // Add to results
-      results.push([itemNum, itemDesc, totalRequired, currentInventory, difference, casesNeeded]);
+      // Add to results (now includes location ID in column C)
+      results.push([itemNum, itemDesc, locationId, totalRequired, currentInventory, difference, casesNeeded]);
     }
     
-    // Sort results by Item Number for easier reading
+    // Sort results by Location Id first, then by Item Number for easier reading
     results.sort((a, b) => {
+      // First sort by Location Id (column 2)
+      if (a[2] < b[2]) return -1;
+      if (a[2] > b[2]) return 1;
+      
+      // If Location Ids are the same, sort by Item Number (column 0)
       if (a[0] < b[0]) return -1;
       if (a[0] > b[0]) return 1;
       return 0;
@@ -148,23 +184,26 @@ function calculateInventoryRequirements() {
     
     // Write results to sheet
     if (results.length > 0) {
-      wsReq.getRange(2, 1, results.length, 6).setValues(results);
+      wsReq.getRange(2, 1, results.length, 7).setValues(results); // Now 7 columns instead of 6
       
       // Format the requirements sheet
-      const headerRange = wsReq.getRange("A1:F1");
+      const headerRange = wsReq.getRange("A1:G1"); // Extended to G1
       headerRange.setFontWeight("bold");
       headerRange.setBackground("#4285f4");
       headerRange.setFontColor("white");
       
       // Auto-resize columns
-      wsReq.autoResizeColumns(1, 6);
+      wsReq.autoResizeColumns(1, 7); // Now 7 columns
       
-      // Format number columns
-      wsReq.getRange(2, 3, results.length, 3).setNumberFormat("#,##0");
-      wsReq.getRange(2, 6, results.length, 1).setHorizontalAlignment("center");
+      // Format number columns (Total Required, Current Inventory, Difference are now in columns 4, 5, 6)
+      wsReq.getRange(2, 4, results.length, 3).setNumberFormat("#,##0");
+      wsReq.getRange(2, 7, results.length, 1).setHorizontalAlignment("center"); // Cases Needed column
       
-      // Add conditional formatting for negative differences (shortages)
-      const diffRange = wsReq.getRange(2, 5, results.length, 1);
+      // Center align Location Id column
+      wsReq.getRange(2, 3, results.length, 1).setHorizontalAlignment("center");
+      
+      // Add conditional formatting for negative differences (shortages) - now column F
+      const diffRange = wsReq.getRange(2, 6, results.length, 1);
       const rule = SpreadsheetApp.newConditionalFormatRule()
         .whenNumberLessThan(0)
         .setBackground("#ff9999")
@@ -174,8 +213,8 @@ function calculateInventoryRequirements() {
       rules.push(rule);
       wsReq.setConditionalFormatRules(rules);
       
-      // Add conditional formatting for cases needed > 0
-      const casesRange = wsReq.getRange(2, 6, results.length, 1);
+      // Add conditional formatting for cases needed > 0 - now column G
+      const casesRange = wsReq.getRange(2, 7, results.length, 1);
       const casesRule = SpreadsheetApp.newConditionalFormatRule()
         .whenNumberGreaterThan(0)
         .setBackground("#c9daf8")
@@ -184,9 +223,31 @@ function calculateInventoryRequirements() {
       const allRules = wsReq.getConditionalFormatRules();
       allRules.push(casesRule);
       wsReq.setConditionalFormatRules(allRules);
+      
+      // Add conditional formatting to highlight items without location IDs
+      const locationRange = wsReq.getRange(2, 3, results.length, 1);
+      const noLocationRule = SpreadsheetApp.newConditionalFormatRule()
+        .whenTextEqualTo("Not Found")
+        .setBackground("#ffe6cc")
+        .setFontColor("#cc6600")
+        .setRanges([locationRange])
+        .build();
+      const finalRules = wsReq.getConditionalFormatRules();
+      finalRules.push(noLocationRule);
+      wsReq.setConditionalFormatRules(finalRules);
     }
     
-    SpreadsheetApp.getUi().alert(`Inventory requirements calculation complete! Processed ${results.length} unique SKUs across ${recipesData.length - 1} recipe entries.`);
+    // Count items with and without locations for the summary
+    const itemsWithLocation = results.filter(row => row[2] !== "Not Found").length;
+    const itemsWithoutLocation = results.filter(row => row[2] === "Not Found").length;
+    
+    SpreadsheetApp.getUi().alert(`Inventory requirements calculation complete! 
+    
+Processed ${results.length} unique SKUs across ${recipesData.length - 1} recipe entries.
+${itemsWithLocation} items have location assignments.
+${itemsWithoutLocation} items need location assignments.
+    
+Results are sorted by Location ID, then by Item Number.`);
     
   } catch (error) {
     SpreadsheetApp.getUi().alert("Error: " + error.toString());
@@ -194,16 +255,28 @@ function calculateInventoryRequirements() {
   }
 }
 
-// Helper function to debug specific SKU calculations
+// Updated helper function to debug specific SKU calculations (now includes location info)
 function debugSpecificSKU(targetSKU) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const wsRecipes = ss.getSheetByName("Recipes");
   const wsPlan = ss.getSheetByName("Kitting_Plan");
+  const wsSlotting = ss.getSheetByName("Slotting File");
   
   const recipesData = wsRecipes.getDataRange().getValues();
   const planData = wsPlan.getDataRange().getValues();
   
   console.log(`\n=== DEBUG FOR SKU: ${targetSKU} ===`);
+  
+  // Check location first
+  if (wsSlotting) {
+    const slottingData = wsSlotting.getDataRange().getValues();
+    const locationRow = slottingData.find(row => row[2] === targetSKU);
+    if (locationRow) {
+      console.log(`Location: ${locationRow[0]} (${locationRow[1]})`);
+    } else {
+      console.log(`Location: Not Found`);
+    }
+  }
   
   let totalForSKU = 0;
   
@@ -240,12 +313,13 @@ function debugSpecificSKU(targetSKU) {
   console.log(`TOTAL FOR SKU ${targetSKU}: ${totalForSKU}`);
 }
 
-// Helper function to debug data structure
+// Updated helper function to debug data structure (now includes slotting sheet)
 function debugDataStructure() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const wsInv = ss.getSheetByName("Inventory");
   const wsRecipes = ss.getSheetByName("Recipes");
   const wsPlan = ss.getSheetByName("Kitting_Plan");
+  const wsSlotting = ss.getSheetByName("Slotting File");
   
   console.log("=== INVENTORY SHEET STRUCTURE ===");
   const invData = wsInv.getDataRange().getValues();
@@ -261,6 +335,16 @@ function debugDataStructure() {
   const planData = wsPlan.getDataRange().getValues();
   console.log("Headers:", planData[0]);
   if (planData.length > 1) console.log("Sample row:", planData[1]);
+  
+  if (wsSlotting) {
+    console.log("\n=== SLOTTING FILE SHEET STRUCTURE ===");
+    const slottingData = wsSlotting.getDataRange().getValues();
+    console.log("Headers:", slottingData[0]);
+    if (slottingData.length > 1) console.log("Sample row:", slottingData[1]);
+    console.log(`Total slotting entries: ${slottingData.length - 1}`);
+  } else {
+    console.log("\n❌ SLOTTING FILE SHEET NOT FOUND");
+  }
   
   // Count unique recipes and SKUs
   const uniqueRecipes = new Set();
@@ -278,51 +362,61 @@ function debugDataStructure() {
   console.log("Sample recipe codes found:", sampleRecipes);
 }
 
-// Helper function to show recipe matching
-function debugRecipeMatching() {
+// Helper function to check location coverage
+function debugLocationCoverage() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const wsRecipes = ss.getSheetByName("Recipes");
-  const wsPlan = ss.getSheetByName("Kitting_Plan");
+  const wsSlotting = ss.getSheetByName("Slotting File");
+  
+  if (!wsSlotting) {
+    console.log("❌ Slotting File sheet not found!");
+    return;
+  }
   
   const recipesData = wsRecipes.getDataRange().getValues();
-  const planData = wsPlan.getDataRange().getValues();
+  const slottingData = wsSlotting.getDataRange().getValues();
   
-  console.log("=== RECIPE MATCHING DEBUG ===");
+  console.log("=== LOCATION COVERAGE ANALYSIS ===");
   
-  // Get unique recipes from both sheets
-  const recipesFromRecipeSheet = new Set();
-  const recipesFromPlanSheet = new Set();
-  
+  // Get all unique SKUs from recipes
+  const requiredSKUs = new Set();
   for (let i = 1; i < recipesData.length; i++) {
-    if (recipesData[i][1]) recipesFromRecipeSheet.add(String(recipesData[i][1]));
+    if (recipesData[i][6]) { // Column G - Item Number
+      requiredSKUs.add(recipesData[i][6]);
+    }
   }
   
-  for (let i = 1; i < planData.length; i++) {
-    if (planData[i][0]) recipesFromPlanSheet.add(String(planData[i][0]));
+  // Get all SKUs that have locations
+  const skusWithLocations = new Set();
+  for (let i = 1; i < slottingData.length; i++) {
+    if (slottingData[i][2]) { // Column C - Item Number in slotting file
+      skusWithLocations.add(slottingData[i][2]);
+    }
   }
   
-  console.log("Recipes in Recipe sheet:", Array.from(recipesFromRecipeSheet).sort());
-  console.log("Recipes in Kitting Plan sheet:", Array.from(recipesFromPlanSheet).sort());
+  const totalRequired = requiredSKUs.size;
+  const totalWithLocations = Array.from(requiredSKUs).filter(sku => skusWithLocations.has(sku)).length;
+  const missingLocations = Array.from(requiredSKUs).filter(sku => !skusWithLocations.has(sku));
   
-  // Find missing recipes
-  const missingInPlan = Array.from(recipesFromRecipeSheet).filter(r => !recipesFromPlanSheet.has(r));
-  const missingInRecipes = Array.from(recipesFromPlanSheet).filter(r => !recipesFromRecipeSheet.has(r));
+  console.log(`Total unique SKUs needed: ${totalRequired}`);
+  console.log(`SKUs with locations: ${totalWithLocations}`);
+  console.log(`SKUs missing locations: ${totalRequired - totalWithLocations}`);
+  console.log(`Coverage: ${((totalWithLocations / totalRequired) * 100).toFixed(1)}%`);
   
-  if (missingInPlan.length > 0) console.log("Recipes in Recipe sheet but missing in Kitting Plan:", missingInPlan);
-  if (missingInRecipes.length > 0) console.log("Recipes in Kitting Plan but missing in Recipe sheet:", missingInRecipes);
-  
-  if (missingInPlan.length === 0 && missingInRecipes.length === 0) {
-    console.log("✅ All recipes match between sheets!");
+  if (missingLocations.length > 0) {
+    console.log("\nSKUs missing locations (first 10):", missingLocations.slice(0, 10));
   }
 }
 
-// Optional: Create a custom menu to run the functions
+// Updated custom menu
 function onOpen() {
   const ui = SpreadsheetApp.getUi();
   ui.createMenu('Inventory Tools')
     .addItem('Calculate Requirements', 'calculateInventoryRequirements')
+    .addSeparator()
     .addItem('Debug Data Structure', 'debugDataStructure')
     .addItem('Debug Recipe Matching', 'debugRecipeMatching')
+    .addItem('Debug Location Coverage', 'debugLocationCoverage')
     .addSeparator()
     .addItem('Debug Specific SKU', 'debugSpecificSKUPrompt')
     .addToUi();
